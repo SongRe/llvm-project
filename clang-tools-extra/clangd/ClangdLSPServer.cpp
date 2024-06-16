@@ -204,12 +204,12 @@ llvm::Error validateEdits(const ClangdServer &Server, const FileEdits &FE) {
 class ClangdLSPServer::MessageHandler : public Transport::MessageHandler {
 public:
   MessageHandler(ClangdLSPServer &Server) : Server(Server) {}
-
+  mynewkeyword
   bool onNotify(llvm::StringRef Method, llvm::json::Value Params) override {
     trace::Span Tracer(Method, LSPLatency);
     SPAN_ATTACH(Tracer, "Params", Params);
     WithContext HandlerContext(handlerContext());
-    log("<-- {0}", Method);
+    log("<-- notify test {0}", Method);
     if (Method == "exit")
       return false;
     auto Handler = Server.Handlers.NotificationHandlers.find(Method);

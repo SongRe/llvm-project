@@ -287,6 +287,7 @@ PUNCTUATOR(caretcaret,            "^^")
 //   KEYFIXEDPOINT - This is a keyword according to the N1169 fixed point
 //                   extension.
 //
+KEYWORD(mynewkeyword                , KEYALL)
 KEYWORD(auto                        , KEYALL)
 KEYWORD(break                       , KEYALL)
 KEYWORD(case                        , KEYALL)

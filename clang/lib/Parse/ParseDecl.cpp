@@ -32,6 +32,7 @@
 #include "llvm/ADT/SmallSet.h"
 #include "llvm/ADT/SmallString.h"
 #include "llvm/ADT/StringSwitch.h"
+#include "llvm/Support/raw_ostream.h"
 #include <optional>
 
 using namespace clang;
@@ -3600,7 +3601,9 @@ void Parser::ParseDeclarationSpecifiers(
       // specifiers.  First verify that DeclSpec's are consistent.
       DS.Finish(Actions, Policy);
       return;
-
+    case tok::kw_mynewkeyword: 
+      llvm::errs() << "ERORORJEIOSFLKDASJFOIDLAJFODISAL\n";
+      return;
     // alignment-specifier
     case tok::kw__Alignas:
       diagnoseUseOfC11Keyword(Tok);
