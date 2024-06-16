@@ -714,6 +714,7 @@ enum class ErrorResultCode : int {
 int clangdMain(int argc, char *argv[]) {
   // Clang could run on the main thread. e.g., when the flag '-check' or '-sync'
   // is enabled.
+  log("Test 1");
   clang::noteBottomOfStack();
   llvm::InitLLVM X(argc, argv);
   llvm::InitializeAllTargetInfos();
@@ -1008,6 +1009,7 @@ clangd accepts flags on the commandline, and in the CLANGD_FLAGS environment var
 
   ClangdLSPServer LSPServer(*TransportLayer, TFS, Opts);
   llvm::set_thread_name("clangd.main");
+  log("we're in business");
   int ExitCode = LSPServer.run()
                      ? 0
                      : static_cast<int>(ErrorResultCode::NoShutdownRequest);
