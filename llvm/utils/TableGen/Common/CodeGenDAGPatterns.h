@@ -11,8 +11,8 @@
 //
 //===----------------------------------------------------------------------===//
 
-#ifndef LLVM_UTILS_TABLEGEN_CODEGENDAGPATTERNS_H
-#define LLVM_UTILS_TABLEGEN_CODEGENDAGPATTERNS_H
+#ifndef LLVM_UTILS_TABLEGEN_COMMON_CODEGENDAGPATTERNS_H
+#define LLVM_UTILS_TABLEGEN_COMMON_CODEGENDAGPATTERNS_H
 
 #include "Basic/CodeGenIntrinsics.h"
 #include "Basic/SDNodeProperties.h"
@@ -48,15 +48,12 @@ class CodeGenDAGPatterns;
 using TreePatternNodePtr = IntrusiveRefCntPtr<TreePatternNode>;
 
 /// This represents a set of MVTs. Since the underlying type for the MVT
-/// is uint8_t, there are at most 256 values. To reduce the number of memory
+/// is uint16_t, there are at most 65536 values. To reduce the number of memory
 /// allocations and deallocations, represent the set as a sequence of bits.
 /// To reduce the allocations even further, make MachineValueTypeSet own
 /// the storage and use std::array as the bit container.
 struct MachineValueTypeSet {
-  static_assert(std::is_same<std::underlying_type_t<MVT::SimpleValueType>,
-                             uint8_t>::value,
-                "Change uint8_t here to the SimpleValueType's type");
-  static unsigned constexpr Capacity = std::numeric_limits<uint8_t>::max() + 1;
+  static unsigned constexpr Capacity = 512;
   using WordType = uint64_t;
   static unsigned constexpr WordWidth = CHAR_BIT * sizeof(WordType);
   static unsigned constexpr NumWords = Capacity / WordWidth;
@@ -84,9 +81,11 @@ struct MachineValueTypeSet {
   }
   LLVM_ATTRIBUTE_ALWAYS_INLINE
   unsigned count(MVT T) const {
+    assert(T.SimpleTy < Capacity && "Capacity needs to be enlarged");
     return (Words[T.SimpleTy / WordWidth] >> (T.SimpleTy % WordWidth)) & 1;
   }
   std::pair<MachineValueTypeSet &, bool> insert(MVT T) {
+    assert(T.SimpleTy < Capacity && "Capacity needs to be enlarged");
     bool V = count(T.SimpleTy);
     Words[T.SimpleTy / WordWidth] |= WordType(1) << (T.SimpleTy % WordWidth);
     return {*this, V};
@@ -98,6 +97,7 @@ struct MachineValueTypeSet {
   }
   LLVM_ATTRIBUTE_ALWAYS_INLINE
   void erase(MVT T) {
+    assert(T.SimpleTy < Capacity && "Capacity needs to be enlarged");
     Words[T.SimpleTy / WordWidth] &= ~(WordType(1) << (T.SimpleTy % WordWidth));
   }
 
@@ -193,8 +193,6 @@ struct TypeSetByHwMode : public InfoByHwMode<MachineValueTypeSet> {
   TypeSetByHwMode &operator=(const TypeSetByHwMode &) = default;
   TypeSetByHwMode(MVT::SimpleValueType VT)
       : TypeSetByHwMode(ValueTypeByHwMode(VT)) {}
-  TypeSetByHwMode(ValueTypeByHwMode VT)
-      : TypeSetByHwMode(ArrayRef<ValueTypeByHwMode>(&VT, 1)) {}
   TypeSetByHwMode(ArrayRef<ValueTypeByHwMode> VTList);
 
   SetType &getOrCreate(unsigned Mode) { return Map[Mode]; }
@@ -264,7 +262,8 @@ struct TypeInfer {
   bool MergeInTypeInfo(TypeSetByHwMode &Out, MVT::SimpleValueType InVT) const {
     return MergeInTypeInfo(Out, TypeSetByHwMode(InVT));
   }
-  bool MergeInTypeInfo(TypeSetByHwMode &Out, ValueTypeByHwMode InVT) const {
+  bool MergeInTypeInfo(TypeSetByHwMode &Out,
+                       const ValueTypeByHwMode &InVT) const {
     return MergeInTypeInfo(Out, TypeSetByHwMode(InVT));
   }
 
@@ -533,6 +532,8 @@ public:
 
   // Check if the HasNoUse predicate is set.
   bool hasNoUse() const;
+  // Check if the HasOneUse predicate is set.
+  bool hasOneUse() const;
 
   // Is the desired predefined predicate for a load?
   bool isLoad() const;
@@ -839,12 +840,14 @@ public: // Higher level manipulation routines.
                       TreePattern &TP);
   bool UpdateNodeType(unsigned ResNo, MVT::SimpleValueType InTy,
                       TreePattern &TP);
-  bool UpdateNodeType(unsigned ResNo, ValueTypeByHwMode InTy, TreePattern &TP);
+  bool UpdateNodeType(unsigned ResNo, const ValueTypeByHwMode &InTy,
+                      TreePattern &TP);
 
   // Update node type with types inferred from an instruction operand or result
   // def from the ins/outs lists.
   // Return true if the type changed.
-  bool UpdateNodeTypeFromInst(unsigned ResNo, Record *Operand, TreePattern &TP);
+  bool UpdateNodeTypeFromInst(unsigned ResNo, const Record *Operand,
+                              TreePattern &TP);
 
   /// ContainsUnresolvedType - Return true if this tree contains any
   /// unresolved types.
@@ -994,7 +997,7 @@ inline bool TreePatternNode::UpdateNodeType(unsigned ResNo,
 }
 
 inline bool TreePatternNode::UpdateNodeType(unsigned ResNo,
-                                            ValueTypeByHwMode InTy,
+                                            const ValueTypeByHwMode &InTy,
                                             TreePattern &TP) {
   TypeSetByHwMode VTS(InTy);
   TP.getInfer().expandOverloads(VTS);
@@ -1008,15 +1011,15 @@ struct DAGDefaultOperand {
 };
 
 class DAGInstruction {
-  std::vector<Record *> Results;
-  std::vector<Record *> Operands;
+  std::vector<const Record *> Results;
+  std::vector<const Record *> Operands;
   std::vector<Record *> ImpResults;
   TreePatternNodePtr SrcPattern;
   TreePatternNodePtr ResultPattern;
 
 public:
-  DAGInstruction(std::vector<Record *> &&results,
-                 std::vector<Record *> &&operands,
+  DAGInstruction(std::vector<const Record *> &&results,
+                 std::vector<const Record *> &&operands,
                  std::vector<Record *> &&impresults,
                  TreePatternNodePtr srcpattern = nullptr,
                  TreePatternNodePtr resultpattern = nullptr)
@@ -1029,12 +1032,12 @@ public:
   unsigned getNumImpResults() const { return ImpResults.size(); }
   const std::vector<Record *> &getImpResults() const { return ImpResults; }
 
-  Record *getResult(unsigned RN) const {
+  const Record *getResult(unsigned RN) const {
     assert(RN < Results.size());
     return Results[RN];
   }
 
-  Record *getOperand(unsigned ON) const {
+  const Record *getOperand(unsigned ON) const {
     assert(ON < Operands.size());
     return Operands[ON];
   }
@@ -1102,7 +1105,7 @@ class CodeGenDAGPatterns {
   std::map<Record *, ComplexPattern, LessRecordByID> ComplexPatterns;
   std::map<Record *, std::unique_ptr<TreePattern>, LessRecordByID>
       PatternFragments;
-  std::map<Record *, DAGDefaultOperand, LessRecordByID> DefaultOperands;
+  std::map<const Record *, DAGDefaultOperand, LessRecordByID> DefaultOperands;
   std::map<Record *, DAGInstruction, LessRecordByID> Instructions;
 
   // Specific SDNode definitions:
@@ -1171,7 +1174,7 @@ public:
     llvm_unreachable("Unknown intrinsic!");
   }
 
-  const DAGDefaultOperand &getDefaultOperand(Record *R) const {
+  const DAGDefaultOperand &getDefaultOperand(const Record *R) const {
     auto F = DefaultOperands.find(R);
     assert(F != DefaultOperands.end() && "Isn't an analyzed default operand!");
     return F->second;
@@ -1223,7 +1226,7 @@ public:
 
   unsigned allocateScope() { return ++NumScopes; }
 
-  bool operandHasDefault(Record *Op) const {
+  bool operandHasDefault(const Record *Op) const {
     return Op->isSubClassOf("OperandWithDefaultOps") &&
            !getDefaultOperand(Op).DefaultOps.empty();
   }
@@ -1264,4 +1267,4 @@ inline bool SDNodeInfo::ApplyTypeConstraints(TreePatternNode &N,
 
 } // end namespace llvm
 
-#endif
+#endif // LLVM_UTILS_TABLEGEN_COMMON_CODEGENDAGPATTERNS_H

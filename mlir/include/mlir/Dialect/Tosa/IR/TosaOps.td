@@ -897,6 +897,8 @@ def Tosa_TableOp : Tosa_InferShapedTypeOp<"table"> {
   let assemblyFormat = [{
     $input `,` $table attr-dict `:` `(` type($input) `,` type($table) `)` `->` type($output)
   }];
+
+  let hasVerifier = 1;
 }
 
 //===----------------------------------------------------------------------===//
@@ -1002,7 +1004,7 @@ def Tosa_CosOp : Tosa_ElementwiseOp<"cos",
   }];
 
   let arguments = (ins
-    Tosa_FloatTensor:$input
+    Tosa_FloatTensor:$input1
   );
 
   let results = (outs
@@ -1181,7 +1183,7 @@ def Tosa_SinOp : Tosa_ElementwiseOp<"sin",
   }];
 
   let arguments = (ins
-    Tosa_FloatTensor:$input
+    Tosa_FloatTensor:$input1
   );
 
   let results = (outs
@@ -1592,6 +1594,7 @@ def Tosa_PadOp : Tosa_InferShapedTypeOp<"pad"> {
 
   let hasCanonicalizer = 1;
   let hasFolder = 1;
+  let hasVerifier = 1;
 }
 
 //===----------------------------------------------------------------------===//
@@ -1857,11 +1860,11 @@ def Tosa_CastOp: Tosa_Op<"cast", [Pure,
   }];
 
   let arguments = (ins
-    Tosa_Tensor_Plus_F64:$input
+    Tosa_Tensor:$input
   );
 
   let results = (outs
-    Tosa_Tensor_Plus_F64:$output
+    Tosa_Tensor:$output
   );
 
   let assemblyFormat = "operands attr-dict `:` functional-type(operands, results)";
@@ -1944,7 +1947,7 @@ def Tosa_ConstOp : Tosa_Op<"const", [ConstantLike, Pure,
   );
 
   let results = (outs
-    TensorOf<[AnyTypeOf<[Tosa_AnyNumber_Plus_F64]>]>:$output
+    TensorOf<[AnyTypeOf<[Tosa_AnyNumber]>]>:$output
   );
 
   let hasFolder = 1;

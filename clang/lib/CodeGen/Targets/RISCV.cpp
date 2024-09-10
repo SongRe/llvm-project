@@ -48,10 +48,10 @@ public:
                                   int &ArgFPRsLeft) const;
   ABIArgInfo classifyReturnType(QualType RetTy) const;
 
-  Address EmitVAArg(CodeGenFunction &CGF, Address VAListAddr,
-                    QualType Ty) const override;
+  RValue EmitVAArg(CodeGenFunction &CGF, Address VAListAddr, QualType Ty,
+                   AggValueSlot Slot) const override;
 
-  ABIArgInfo extendType(QualType Ty) const;
+  ABIArgInfo extendType(QualType Ty, llvm::Type *CoerceTy = nullptr) const;
 
   bool detectFPCCEligibleStruct(QualType Ty, llvm::Type *&Field1Ty,
                                 CharUnits &Field1Off, llvm::Type *&Field2Ty,
@@ -327,11 +327,20 @@ ABIArgInfo RISCVABIInfo::coerceVLSVector(QualType Ty) const {
       getContext().getTargetInfo().getVScaleRange(getContext().getLangOpts());
 
   unsigned NumElts = VT->getNumElements();
-  llvm::Type *EltType;
-  if (VT->getVectorKind() == VectorKind::RVVFixedLengthMask) {
+  llvm::Type *EltType = llvm::Type::getInt1Ty(getVMContext());
+  switch (VT->getVectorKind()) {
+  case VectorKind::RVVFixedLengthMask_1:
+    break;
+  case VectorKind::RVVFixedLengthMask_2:
+    NumElts *= 2;
+    break;
+  case VectorKind::RVVFixedLengthMask_4:
+    NumElts *= 4;
+    break;
+  case VectorKind::RVVFixedLengthMask:
     NumElts *= 8;
-    EltType = llvm::Type::getInt1Ty(getVMContext());
-  } else {
+    break;
+  default:
     assert(VT->getVectorKind() == VectorKind::RVVFixedLengthData &&
            "Unexpected vector kind");
     EltType = CGT.ConvertType(VT->getElementType());
@@ -361,11 +370,12 @@ ABIArgInfo RISCVABIInfo::classifyArgumentType(QualType Ty, bool IsFixed,
                                            CGCXXABI::RAA_DirectInMemory);
   }
 
-  // Ignore empty structs/unions.
-  if (isEmptyRecord(getContext(), Ty, true))
-    return ABIArgInfo::getIgnore();
-
   uint64_t Size = getContext().getTypeSize(Ty);
+
+  // Ignore empty structs/unions whose size is zero. According to the calling
+  // convention empty structs/unions are required to be sized types in C++.
+  if (isEmptyRecord(getContext(), Ty, true) && Size == 0)
+    return ABIArgInfo::getIgnore();
 
   // Pass floating point values via FPRs if possible.
   if (IsFixed && Ty->isFloatingType() && !Ty->isComplexType() &&
@@ -429,12 +439,12 @@ ABIArgInfo RISCVABIInfo::classifyArgumentType(QualType Ty, bool IsFixed,
 
     // All integral types are promoted to XLen width
     if (Size < XLen && Ty->isIntegralOrEnumerationType()) {
-      return extendType(Ty);
+      return extendType(Ty, CGT.ConvertType(Ty));
     }
 
     if (const auto *EIT = Ty->getAs<BitIntType>()) {
       if (EIT->getNumBits() < XLen)
-        return extendType(Ty);
+        return extendType(Ty, CGT.ConvertType(Ty));
       if (EIT->getNumBits() > 128 ||
           (!getContext().getTargetInfo().hasInt128Type() &&
            EIT->getNumBits() > 64))
@@ -452,7 +462,10 @@ ABIArgInfo RISCVABIInfo::classifyArgumentType(QualType Ty, bool IsFixed,
 
   if (const VectorType *VT = Ty->getAs<VectorType>())
     if (VT->getVectorKind() == VectorKind::RVVFixedLengthData ||
-        VT->getVectorKind() == VectorKind::RVVFixedLengthMask)
+        VT->getVectorKind() == VectorKind::RVVFixedLengthMask ||
+        VT->getVectorKind() == VectorKind::RVVFixedLengthMask_1 ||
+        VT->getVectorKind() == VectorKind::RVVFixedLengthMask_2 ||
+        VT->getVectorKind() == VectorKind::RVVFixedLengthMask_4)
       return coerceVLSVector(Ty);
 
   // Aggregates which are <= 2*XLen will be passed in registers if possible,
@@ -489,15 +502,13 @@ ABIArgInfo RISCVABIInfo::classifyReturnType(QualType RetTy) const {
                               ArgFPRsLeft);
 }
 
-Address RISCVABIInfo::EmitVAArg(CodeGenFunction &CGF, Address VAListAddr,
-                                QualType Ty) const {
+RValue RISCVABIInfo::EmitVAArg(CodeGenFunction &CGF, Address VAListAddr,
+                               QualType Ty, AggValueSlot Slot) const {
   CharUnits SlotSize = CharUnits::fromQuantity(XLen / 8);
 
   // Empty records are ignored for parameter passing purposes.
-  if (isEmptyRecord(getContext(), Ty, true)) {
-    return Address(CGF.Builder.CreateLoad(VAListAddr),
-                   CGF.ConvertTypeForMem(Ty), SlotSize);
-  }
+  if (isEmptyRecord(getContext(), Ty, true))
+    return Slot.asRValue();
 
   auto TInfo = getContext().getTypeInfoInChars(Ty);
 
@@ -511,16 +522,16 @@ Address RISCVABIInfo::EmitVAArg(CodeGenFunction &CGF, Address VAListAddr,
   // Arguments bigger than 2*Xlen bytes are passed indirectly.
   bool IsIndirect = TInfo.Width > 2 * SlotSize;
 
-  return emitVoidPtrVAArg(CGF, VAListAddr, Ty, IsIndirect, TInfo,
-                          SlotSize, /*AllowHigherAlign=*/true);
+  return emitVoidPtrVAArg(CGF, VAListAddr, Ty, IsIndirect, TInfo, SlotSize,
+                          /*AllowHigherAlign=*/true, Slot);
 }
 
-ABIArgInfo RISCVABIInfo::extendType(QualType Ty) const {
+ABIArgInfo RISCVABIInfo::extendType(QualType Ty, llvm::Type *CoerceTy) const {
   int TySize = getContext().getTypeSize(Ty);
   // RV64 ABI requires unsigned 32 bit integers to be sign extended.
   if (XLen == 64 && Ty->isUnsignedIntegerOrEnumerationType() && TySize == 32)
-    return ABIArgInfo::getSignExtend(Ty);
-  return ABIArgInfo::getExtend(Ty);
+    return ABIArgInfo::getSignExtend(Ty, CoerceTy);
+  return ABIArgInfo::getExtend(Ty, CoerceTy);
 }
 
 namespace {

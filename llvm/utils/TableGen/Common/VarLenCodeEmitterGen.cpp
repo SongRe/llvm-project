@@ -241,8 +241,8 @@ void VarLenCodeEmitterGen::run(raw_ostream &OS) {
         for (auto &KV : EBM) {
           AltEncodingTy Mode = KV.first;
           Modes.insert({Mode, "_" + HWM.getMode(Mode).Name.str()});
-          Record *EncodingDef = KV.second;
-          RecordVal *RV = EncodingDef->getValue("Inst");
+          const Record *EncodingDef = KV.second;
+          const RecordVal *RV = EncodingDef->getValue("Inst");
           DagInit *DI = cast<DagInit>(RV->getValue());
           VarLenInsts[R].insert({Mode, VarLenInst(DI, RV)});
         }
@@ -405,7 +405,7 @@ void VarLenCodeEmitterGen::emitInstructionBaseValues(
   IS.indent(4) << "{/*NumBits*/0, /*Index*/0}\n  };\n";
   SS.indent(4) << "UINT64_C(0)\n  };\n";
 
-  OS << IS.str() << SS.str();
+  OS << IndexArray << StorageArray;
 }
 
 std::string VarLenCodeEmitterGen::getInstructionCases(Record *R,

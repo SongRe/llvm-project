@@ -494,7 +494,7 @@ void FastISelMap::collectPatterns(CodeGenDAGPatterns &CGP) {
     const CodeGenRegisterClass *DstRC = nullptr;
     std::string SubRegNo;
     if (Op->getName() != "EXTRACT_SUBREG") {
-      Record *Op0Rec = II.Operands[0].Rec;
+      const Record *Op0Rec = II.Operands[0].Rec;
       if (Op0Rec->isSubClassOf("RegisterOperand"))
         Op0Rec = Op0Rec->getValueAsDef("RegClass");
       if (!Op0Rec->isSubClassOf("RegisterClass"))
@@ -821,8 +821,7 @@ void FastISelMap::printFunctionDefinitions(raw_ostream &OS) {
     if (MI != SignaturesWithConstantForms.end()) {
       // Unique any duplicates out of the list.
       llvm::sort(MI->second);
-      MI->second.erase(std::unique(MI->second.begin(), MI->second.end()),
-                       MI->second.end());
+      MI->second.erase(llvm::unique(MI->second), MI->second.end());
 
       // Check each in order it was seen.  It would be nice to have a good
       // relative ordering between them, but we're not going for optimality

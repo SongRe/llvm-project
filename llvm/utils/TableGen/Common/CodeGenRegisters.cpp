@@ -22,6 +22,7 @@
 #include "llvm/ADT/SmallSet.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/StringRef.h"
+#include "llvm/ADT/StringSet.h"
 #include "llvm/ADT/Twine.h"
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/raw_ostream.h"
@@ -157,7 +158,7 @@ void CodeGenSubRegIndex::computeConcatTransitiveClosure() {
 //                              CodeGenRegister
 //===----------------------------------------------------------------------===//
 
-CodeGenRegister::CodeGenRegister(Record *R, unsigned Enum)
+CodeGenRegister::CodeGenRegister(const Record *R, unsigned Enum)
     : TheDef(R), EnumValue(Enum),
       CostPerUse(R->getValueAsListOfInts("CostPerUse")),
       CoveredBySubRegs(R->getValueAsBit("CoveredBySubRegs")),
@@ -618,10 +619,14 @@ struct TupleExpander : SetTheory::Expander {
   // the synthesized definitions for their lifetime.
   std::vector<std::unique_ptr<Record>> &SynthDefs;
 
+  // Track all synthesized tuple names in order to detect duplicate definitions.
+  llvm::StringSet<> TupleNames;
+
   TupleExpander(std::vector<std::unique_ptr<Record>> &SynthDefs)
       : SynthDefs(SynthDefs) {}
 
-  void expand(SetTheory &ST, Record *Def, SetTheory::RecSet &Elts) override {
+  void expand(SetTheory &ST, const Record *Def,
+              SetTheory::RecSet &Elts) override {
     std::vector<Record *> Indices = Def->getValueAsListOfDefs("SubRegIndices");
     unsigned Dim = Indices.size();
     ListInit *SubRegs = Def->getValueAsListInit("SubRegs");
@@ -652,14 +657,14 @@ struct TupleExpander : SetTheory::Expander {
     RecordKeeper &RK = Def->getRecords();
     for (unsigned n = 0; n != Length; ++n) {
       std::string Name;
-      Record *Proto = Lists[0][n];
+      const Record *Proto = Lists[0][n];
       std::vector<Init *> Tuple;
       for (unsigned i = 0; i != Dim; ++i) {
-        Record *Reg = Lists[i][n];
+        const Record *Reg = Lists[i][n];
         if (i)
           Name += '_';
         Name += Reg->getName();
-        Tuple.push_back(DefInit::get(Reg));
+        Tuple.push_back(Reg->getDefInit());
       }
 
       // Take the cost list of the first register in the tuple.
@@ -683,6 +688,12 @@ struct TupleExpander : SetTheory::Expander {
           std::make_unique<Record>(Name, Def->getLoc(), Def->getRecords()));
       Record *NewReg = SynthDefs.back().get();
       Elts.insert(NewReg);
+
+      // Detect duplicates among synthesized registers.
+      const auto Res = TupleNames.insert(NewReg->getName());
+      if (!Res.second)
+        PrintFatalError(Def->getLoc(),
+                        "Register tuple redefines register '" + Name + "'.");
 
       // Copy Proto super-classes.
       ArrayRef<std::pair<Record *, SMRange>> Supers = Proto->getSuperClasses();
@@ -743,7 +754,7 @@ struct TupleExpander : SetTheory::Expander {
 
 static void sortAndUniqueRegisters(CodeGenRegister::Vec &M) {
   llvm::sort(M, deref<std::less<>>());
-  M.erase(std::unique(M.begin(), M.end(), deref<std::equal_to<>>()), M.end());
+  M.erase(llvm::unique(M, deref<std::equal_to<>>()), M.end());
 }
 
 CodeGenRegisterClass::CodeGenRegisterClass(CodeGenRegBank &RegBank, Record *R)
@@ -1187,18 +1198,17 @@ CodeGenRegBank::CodeGenRegBank(RecordKeeper &Records,
     Idx.updateComponents(*this);
 
   // Read in the register and register tuple definitions.
-  std::vector<Record *> Regs = Records.getAllDerivedDefinitions("Register");
+  const RecordKeeper &RC = Records;
+  std::vector<const Record *> Regs = RC.getAllDerivedDefinitions("Register");
   if (!Regs.empty() && Regs[0]->isSubClassOf("X86Reg")) {
     // For X86, we need to sort Registers and RegisterTuples together to list
     // new registers and register tuples at a later position. So that we can
     // reduce unnecessary iterations on unsupported registers in LiveVariables.
     // TODO: Remove this logic when migrate from LiveVariables to LiveIntervals
     // completely.
-    std::vector<Record *> Tups =
-        Records.getAllDerivedDefinitions("RegisterTuples");
-    for (Record *R : Tups) {
+    for (const Record *R : Records.getAllDerivedDefinitions("RegisterTuples")) {
       // Expand tuples and merge the vectors
-      std::vector<Record *> TupRegs = *Sets.expand(R);
+      std::vector<const Record *> TupRegs = *Sets.expand(R);
       Regs.insert(Regs.end(), TupRegs.begin(), TupRegs.end());
     }
 
@@ -1213,13 +1223,10 @@ CodeGenRegBank::CodeGenRegBank(RecordKeeper &Records,
       getReg(Regs[i]);
 
     // Expand tuples and number the new registers.
-    std::vector<Record *> Tups =
-        Records.getAllDerivedDefinitions("RegisterTuples");
-
-    for (Record *R : Tups) {
-      std::vector<Record *> TupRegs = *Sets.expand(R);
+    for (Record *R : Records.getAllDerivedDefinitions("RegisterTuples")) {
+      std::vector<const Record *> TupRegs = *Sets.expand(R);
       llvm::sort(TupRegs, LessRecordRegister());
-      for (Record *RC : TupRegs)
+      for (const Record *RC : TupRegs)
         getReg(RC);
     }
   }
@@ -1331,7 +1338,7 @@ CodeGenRegBank::findSubRegIdx(const Record *Def) const {
   return Def2SubRegIdx.lookup(Def);
 }
 
-CodeGenRegister *CodeGenRegBank::getReg(Record *Def) {
+CodeGenRegister *CodeGenRegBank::getReg(const Record *Def) {
   CodeGenRegister *&Reg = Def2Reg[Def];
   if (Reg)
     return Reg;
@@ -1341,7 +1348,7 @@ CodeGenRegister *CodeGenRegBank::getReg(Record *Def) {
 }
 
 void CodeGenRegBank::addToMaps(CodeGenRegisterClass *RC) {
-  if (Record *Def = RC->getDef())
+  if (const Record *Def = RC->getDef())
     Def2RC.insert(std::pair(Def, RC));
 
   // Duplicate classes are rejected by insert().
@@ -2497,7 +2504,8 @@ CodeGenRegBank::getMinimalPhysRegClass(Record *RegRecord,
   return BestRC;
 }
 
-BitVector CodeGenRegBank::computeCoveredRegisters(ArrayRef<Record *> Regs) {
+BitVector
+CodeGenRegBank::computeCoveredRegisters(ArrayRef<const Record *> Regs) {
   SetVector<const CodeGenRegister *> Set;
 
   // First add Regs with all sub-registers.
