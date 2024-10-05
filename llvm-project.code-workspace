@@ -1,0 +1,10 @@
+{
+	"folders": [
+		{
+			"path": "."
+		}
+	],
+	"settings": {
+		"clangd.path": "/Users/kevinsong/VSCode/llvm-project/build/bin/clangd"
+	}
+}

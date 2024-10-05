@@ -3116,6 +3116,8 @@ TypeWithKeyword::getKeywordForTypeSpec(unsigned TypeSpec) {
     return ElaboratedTypeKeyword::None;
   case TST_typename:
     return ElaboratedTypeKeyword::Typename;
+  case TST_coroutine:
+    return ElaboratedTypeKeyword::Coroutine;
   case TST_class:
     return ElaboratedTypeKeyword::Class;
   case TST_struct:
@@ -3132,6 +3134,8 @@ TypeWithKeyword::getKeywordForTypeSpec(unsigned TypeSpec) {
 TagTypeKind
 TypeWithKeyword::getTagTypeKindForTypeSpec(unsigned TypeSpec) {
   switch(TypeSpec) {
+  case TST_coroutine: 
+    return TagTypeKind::Coroutine;
   case TST_class:
     return TagTypeKind::Class;
   case TST_struct:

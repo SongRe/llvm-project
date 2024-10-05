@@ -6752,6 +6752,9 @@ enum class ElaboratedTypeKeyword {
   /// \c typename T::type.
   Typename,
 
+  /// The "Coroutine" keyword also introduces elaborated-type specifier
+  Coroutine,
+
   /// No keyword precedes the qualified type name.
   None
 };
@@ -6771,7 +6774,10 @@ enum class TagTypeKind {
   Class,
 
   /// The "enum" keyword.
-  Enum
+  Enum,
+
+  /// The "_Coroutine" keyword.
+  Coroutine
 };
 
 /// A helper class for Type nodes having an ElaboratedTypeKeyword.
