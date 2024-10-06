@@ -2037,6 +2037,8 @@ static const char *GetCompletionTypeString(QualType T, ASTContext &Context,
             return "__interface <anonymous>";
           case TagTypeKind::Class:
             return "class <anonymous>";
+          case TagTypeKind::Coroutine:
+            return "class <anonymous>";
           case TagTypeKind::Union:
             return "union <anonymous>";
           case TagTypeKind::Enum:
@@ -4184,6 +4186,7 @@ CXCursorKind clang::getCursorKindForDecl(const Decl *D) {
       case TagTypeKind::Struct:
         return CXCursor_StructDecl;
       case TagTypeKind::Class:
+      case TagTypeKind::Coroutine:
         return CXCursor_ClassDecl;
       case TagTypeKind::Union:
         return CXCursor_UnionDecl;
