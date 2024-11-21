@@ -730,6 +730,7 @@ enum class ErrorResultCode : int {
 int clangdMain(int argc, char *argv[]) {
   // Clang could run on the main thread. e.g., when the flag '-check' or '-sync'
   // is enabled.
+  log("RUNNING CUSTOM BUILD")
   clang::noteBottomOfStack();
   llvm::InitLLVM X(argc, argv);
   llvm::InitializeAllTargetInfos();

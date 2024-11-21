@@ -1819,12 +1819,18 @@ static void AddTypeSpecifierResults(const LangOptions &LangOpts,
     Results.AddResult(
         Result("bool", CCP_Type + (LangOpts.ObjC ? CCD_bool_in_ObjC : 0)));
     Results.AddResult(Result("class", CCP_Type));
-    Results.AddResult(Result("_Coroutine", CCP_Type));
     Results.AddResult(Result("wchar_t", CCP_Type));
 
+    // uC++-specific
+    Results.AddResult(Result("_Coroutine", CCP_Type));
     Builder.AddTypedTextChunk("_Coroutine");
     Builder.AddChunk(CodeCompletionString::CK_HorizontalSpace);
-    Builder.AddInformativeChunk("A Coroutine, as defined by concurrency course.");
+    Builder.AddInformativeChunk("A Coroutine, as defined by uC++.");
+
+    Results.AddResult(Result("_Task", CCP_Type));
+    Builder.AddTypedTextChunk("_Task");
+    Builder.AddChunk(CodeCompletionString::CK_HorizontalSpace);
+    Builder.AddInformativeChunk("A Coroutine, as defined by uC++.");
 
     // typename name
     Builder.AddTypedTextChunk("typename");
@@ -2041,6 +2047,8 @@ static const char *GetCompletionTypeString(QualType T, ASTContext &Context,
             return "class <anonymous>";
           case TagTypeKind::Coroutine:
             return "class <anonymous>";
+          case TagTypeKind::Task:
+            return "Task <anonymous>";
           case TagTypeKind::Union:
             return "union <anonymous>";
           case TagTypeKind::Enum:
@@ -4189,6 +4197,7 @@ CXCursorKind clang::getCursorKindForDecl(const Decl *D) {
         return CXCursor_StructDecl;
       case TagTypeKind::Class:
       case TagTypeKind::Coroutine:
+      case tagTypeKind::Task
         return CXCursor_ClassDecl;
       case TagTypeKind::Union:
         return CXCursor_UnionDecl;
@@ -4542,7 +4551,8 @@ void SemaCodeCompletion::CodeCompleteDeclSpec(Scope *S, DeclSpec &DS,
     if (getLangOpts().CPlusPlus11 &&
         (DS.getTypeSpecType() == DeclSpec::TST_class ||
          DS.getTypeSpecType() == DeclSpec::TST_struct || 
-         DS.getTypeSpecType() == DeclSpec::TST_coroutine))
+         DS.getTypeSpecType() == DeclSpec::TST_coroutine ||
+         DS.getTypeSpecType() == DeclSpec::Task))
       Results.AddResult("final");
 
     if (AllowNonIdentifiers) {
@@ -5933,6 +5943,7 @@ void SemaCodeCompletion::CodeCompleteTag(Scope *S, unsigned TagSpec) {
   case DeclSpec::TST_struct:
   case DeclSpec::TST_class:
   case DeclSpec::TST_coroutine:
+  case DeclSpec::TST_task:
   case DeclSpec::TST_interface:
     Filter = &ResultBuilder::IsClassOrStruct;
     ContextKind = CodeCompletionContext::CCC_ClassOrStructTag;
