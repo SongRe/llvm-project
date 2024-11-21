@@ -304,6 +304,7 @@ public:
   static const TST TST_interface = clang::TST_interface;
   static const TST TST_class = clang::TST_class;
   static const TST TST_coroutine = clang::TST_coroutine;
+  static const TST TST_task = clang::TST_task;
   static const TST TST_typename = clang::TST_typename;
   static const TST TST_typeofType = clang::TST_typeofType;
   static const TST TST_typeofExpr = clang::TST_typeofExpr;

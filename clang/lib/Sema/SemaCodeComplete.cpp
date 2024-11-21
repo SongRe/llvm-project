@@ -4197,7 +4197,7 @@ CXCursorKind clang::getCursorKindForDecl(const Decl *D) {
         return CXCursor_StructDecl;
       case TagTypeKind::Class:
       case TagTypeKind::Coroutine:
-      case tagTypeKind::Task
+      case TagTypeKind::Task:
         return CXCursor_ClassDecl;
       case TagTypeKind::Union:
         return CXCursor_UnionDecl;
@@ -4552,7 +4552,7 @@ void SemaCodeCompletion::CodeCompleteDeclSpec(Scope *S, DeclSpec &DS,
         (DS.getTypeSpecType() == DeclSpec::TST_class ||
          DS.getTypeSpecType() == DeclSpec::TST_struct || 
          DS.getTypeSpecType() == DeclSpec::TST_coroutine ||
-         DS.getTypeSpecType() == DeclSpec::Task))
+         DS.getTypeSpecType() == DeclSpec::TST_task))
       Results.AddResult("final");
 
     if (AllowNonIdentifiers) {

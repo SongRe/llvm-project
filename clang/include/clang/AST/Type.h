@@ -6887,7 +6887,7 @@ enum class TagTypeKind {
   Enum,
 
   /// The "_Coroutine" keyword.
-  Coroutine
+  Coroutine,
 
   /// The "Task" keyword.
   Task
