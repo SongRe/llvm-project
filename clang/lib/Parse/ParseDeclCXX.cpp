@@ -1728,7 +1728,7 @@ void Parser::ParseClassSpecifier(tok::TokenKind TagTokKind,
     TagType = DeclSpec::TST_class;
   else if (TagTokKind == tok::kw__Coroutine)
     TagType = DeclSpec::TST_coroutine;
-  else if (TagTokKind == tok::kw__Coroutine)
+  else if (TagTokKind == tok::kw__Task)
       TagType = DeclSpec::TST_task;
     
   else {

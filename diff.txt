@@ -1,0 +1,440 @@
+diff --git a/clang-tools-extra/clangd/tool/ClangdMain.cpp b/clang-tools-extra/clangd/tool/ClangdMain.cpp
+index cc061e2d9323..c69a63ee588d 100644
+--- a/clang-tools-extra/clangd/tool/ClangdMain.cpp
++++ b/clang-tools-extra/clangd/tool/ClangdMain.cpp
+@@ -730,6 +730,7 @@ enum class ErrorResultCode : int {
+ int clangdMain(int argc, char *argv[]) {
+   // Clang could run on the main thread. e.g., when the flag '-check' or '-sync'
+   // is enabled.
++  log("RUNNING CUSTOM BUILD");
+   clang::noteBottomOfStack();
+   llvm::InitLLVM X(argc, argv);
+   llvm::InitializeAllTargetInfos();
+diff --git a/clang/include/clang/AST/Decl.h b/clang/include/clang/AST/Decl.h
+index 6d5dba6c88c5..f19586ccdb7b 100644
+--- a/clang/include/clang/AST/Decl.h
++++ b/clang/include/clang/AST/Decl.h
+@@ -3768,7 +3768,7 @@ public:
+ 
+   bool isStruct() const { return getTagKind() == TagTypeKind::Struct; }
+   bool isInterface() const { return getTagKind() == TagTypeKind::Interface; }
+-  bool isClass() const { return getTagKind() == TagTypeKind::Class || getTagKind() == TagTypeKind::Coroutine; }
++  bool isClass() const { return getTagKind() == TagTypeKind::Class || getTagKind() == TagTypeKind::Coroutine || getTagKind() == TagTypeKind::Task; }
+   bool isUnion() const { return getTagKind() == TagTypeKind::Union; }
+   bool isEnum() const { return getTagKind() == TagTypeKind::Enum; }
+ 
+diff --git a/clang/include/clang/AST/Type.h b/clang/include/clang/AST/Type.h
+index 8bcd6172668b..126e8f0a1444 100644
+--- a/clang/include/clang/AST/Type.h
++++ b/clang/include/clang/AST/Type.h
+@@ -6862,6 +6862,9 @@ enum class ElaboratedTypeKeyword {
+   /// The "Coroutine" keyword also introduces elaborated-type specifier
+   Coroutine,
+ 
++  /// The "Task" keyword also introduces elaborated-type specifier
++  Task,
++
+   /// No keyword precedes the qualified type name.
+   None
+ };
+@@ -6884,7 +6887,10 @@ enum class TagTypeKind {
+   Enum,
+ 
+   /// The "_Coroutine" keyword.
+-  Coroutine
++  Coroutine,
++
++  /// The "Task" keyword.
++  Task
+ };
+ 
+ /// A helper class for Type nodes having an ElaboratedTypeKeyword.
+diff --git a/clang/include/clang/Basic/Specifiers.h b/clang/include/clang/Basic/Specifiers.h
+index d39523cd90a0..d3725c4a1056 100644
+--- a/clang/include/clang/Basic/Specifiers.h
++++ b/clang/include/clang/Basic/Specifiers.h
+@@ -79,7 +79,8 @@ namespace clang {
+     TST_enum,
+     TST_union,
+     TST_struct,
+-    TST_coroutine,
++    TST_task,              // uC++ Task type
++    TST_coroutine,         // uC++ Coroutine type
+     TST_class,             // C++ class type
+     TST_interface,         // C++ (Microsoft-specific) __interface type
+     TST_typename,          // Typedef, C++ class-name or enum name, etc.
+diff --git a/clang/include/clang/Basic/TokenKinds.def b/clang/include/clang/Basic/TokenKinds.def
+index deac64dca225..807f44175e30 100644
+--- a/clang/include/clang/Basic/TokenKinds.def
++++ b/clang/include/clang/Basic/TokenKinds.def
+@@ -337,6 +337,7 @@ KEYWORD(_Bool                       , KEYNOCXX)
+ KEYWORD(_Complex                    , KEYALL)
+ KEYWORD(_Generic                    , KEYALL)
+ KEYWORD(_Coroutine                  , KEYALL)
++KEYWORD(_Task                       , KEYALL)
+ // Note, C2y removed support for _Imaginary; we retain it as a keyword because
+ // 1) it's a reserved identifier, so we're allowed to steal it, 2) there's no
+ // good way to specify a keyword in earlier but not later language modes within
+diff --git a/clang/include/clang/Sema/DeclSpec.h b/clang/include/clang/Sema/DeclSpec.h
+index 67be14d7ffa5..3b9ab5e2524e 100644
+--- a/clang/include/clang/Sema/DeclSpec.h
++++ b/clang/include/clang/Sema/DeclSpec.h
+@@ -304,6 +304,7 @@ public:
+   static const TST TST_interface = clang::TST_interface;
+   static const TST TST_class = clang::TST_class;
+   static const TST TST_coroutine = clang::TST_coroutine;
++  static const TST TST_task = clang::TST_task;
+   static const TST TST_typename = clang::TST_typename;
+   static const TST TST_typeofType = clang::TST_typeofType;
+   static const TST TST_typeofExpr = clang::TST_typeofExpr;
+@@ -470,7 +471,8 @@ public:
+   static bool isDeclRep(TST T) {
+     return (T == TST_enum || T == TST_struct ||
+             T == TST_interface || T == TST_union ||
+-            T == TST_class || T == TST_coroutine);
++            T == TST_class || T == TST_coroutine ||
++            T == TST_task);
+   }
+   static bool isTransformTypeTrait(TST T) {
+     constexpr std::array<TST, 16> Traits = {
+diff --git a/clang/lib/AST/Type.cpp b/clang/lib/AST/Type.cpp
+index c0779dc309dc..8ec17dc54190 100644
+--- a/clang/lib/AST/Type.cpp
++++ b/clang/lib/AST/Type.cpp
+@@ -3161,6 +3161,8 @@ TypeWithKeyword::getKeywordForTypeSpec(unsigned TypeSpec) {
+     return ElaboratedTypeKeyword::Typename;
+   case TST_coroutine:
+     return ElaboratedTypeKeyword::Coroutine;
++  case TST_task:
++    return ElaboratedTypeKeyword::Task;
+   case TST_class:
+     return ElaboratedTypeKeyword::Class;
+   case TST_struct:
+@@ -3179,6 +3181,8 @@ TypeWithKeyword::getTagTypeKindForTypeSpec(unsigned TypeSpec) {
+   switch(TypeSpec) {
+   case TST_coroutine: 
+     return TagTypeKind::Coroutine;
++  case TST_task: 
++    return TagTypeKind::Task;
+   case TST_class:
+     return TagTypeKind::Class;
+   case TST_struct:
+@@ -3201,6 +3205,8 @@ TypeWithKeyword::getKeywordForTagTypeKind(TagTypeKind Kind) {
+     return ElaboratedTypeKeyword::Class;
+   case TagTypeKind::Coroutine:
+     return ElaboratedTypeKeyword::Coroutine;
++  case TagTypeKind::Task:
++    return ElaboratedTypeKeyword::Task;
+   case TagTypeKind::Struct:
+     return ElaboratedTypeKeyword::Struct;
+   case TagTypeKind::Interface:
+@@ -3220,6 +3226,8 @@ TypeWithKeyword::getTagTypeKindForKeyword(ElaboratedTypeKeyword Keyword) {
+     return TagTypeKind::Class;
+   case ElaboratedTypeKeyword::Coroutine:
+     return TagTypeKind::Coroutine;
++  case ElaboratedTypeKeyword::Task:
++    return TagTypeKind::Task;
+   case ElaboratedTypeKeyword::Struct:
+     return TagTypeKind::Struct;
+   case ElaboratedTypeKeyword::Interface:
+@@ -3243,6 +3251,7 @@ TypeWithKeyword::KeywordIsTagTypeKind(ElaboratedTypeKeyword Keyword) {
+     return false;
+   case ElaboratedTypeKeyword::Class:
+   case ElaboratedTypeKeyword::Coroutine:
++  case ElaboratedTypeKeyword::Task:
+   case ElaboratedTypeKeyword::Struct:
+   case ElaboratedTypeKeyword::Interface:
+   case ElaboratedTypeKeyword::Union:
+@@ -3270,6 +3279,8 @@ StringRef TypeWithKeyword::getKeywordName(ElaboratedTypeKeyword Keyword) {
+     return "enum";
+   case ElaboratedTypeKeyword::Coroutine:
+     return "_Coroutine";
++  case ElaboratedTypeKeyword::Task:
++    return "_Task";
+   }
+ 
+   llvm_unreachable("Unknown elaborated type keyword.");
+diff --git a/clang/lib/Index/USRGeneration.cpp b/clang/lib/Index/USRGeneration.cpp
+index a2acf9eb5256..baf7eb3d108f 100644
+--- a/clang/lib/Index/USRGeneration.cpp
++++ b/clang/lib/Index/USRGeneration.cpp
+@@ -530,6 +530,7 @@ void USRGenerator::VisitTagDecl(const TagDecl *D) {
+       case TagTypeKind::Interface:
+       case TagTypeKind::Class:
+       case TagTypeKind::Coroutine:
++      case TagTypeKind::Task:
+       case TagTypeKind::Struct:
+         Out << "@ST";
+         break;
+@@ -548,6 +549,7 @@ void USRGenerator::VisitTagDecl(const TagDecl *D) {
+       case TagTypeKind::Interface:
+       case TagTypeKind::Class:
+       case TagTypeKind::Coroutine:
++      case TagTypeKind::Task:
+       case TagTypeKind::Struct:
+         Out << "@SP";
+         break;
+@@ -566,6 +568,7 @@ void USRGenerator::VisitTagDecl(const TagDecl *D) {
+     case TagTypeKind::Interface:
+     case TagTypeKind::Class:
+     case TagTypeKind::Coroutine:
++    case TagTypeKind::Task:
+     case TagTypeKind::Struct:
+       Out << "@S";
+       break;
+diff --git a/clang/lib/Parse/ParseDecl.cpp b/clang/lib/Parse/ParseDecl.cpp
+index b5054f9b6db6..82ef59ccda89 100644
+--- a/clang/lib/Parse/ParseDecl.cpp
++++ b/clang/lib/Parse/ParseDecl.cpp
+@@ -3122,6 +3122,8 @@ bool Parser::ParseImplicitInt(DeclSpec &DS, CXXScopeSpec *SS,
+         TagName="class" ; FixitTagName = "class " ;TagKind=tok::kw_class ;break;
+       case DeclSpec::TST_coroutine:
+         TagName="coroutine" ; FixitTagName = "coroutine "; TagKind=tok::kw__Coroutine; break;
++      case DeclSpec::TST_task:
++        TagName="task" ; FixitTagName = "task "; TagKind=tok::kw__Task; break;
+     }
+ 
+     if (TagName) {
+@@ -4687,6 +4689,7 @@ void Parser::ParseDeclarationSpecifiers(
+     // class-specifier:
+     case tok::kw_class:
+     case tok::kw__Coroutine:
++    case tok::kw__Task:
+     case tok::kw_struct:
+     case tok::kw___interface:
+     case tok::kw_union: {
+diff --git a/clang/lib/Parse/ParseDeclCXX.cpp b/clang/lib/Parse/ParseDeclCXX.cpp
+index 3b17ab4a4470..ce342e6601cd 100644
+--- a/clang/lib/Parse/ParseDeclCXX.cpp
++++ b/clang/lib/Parse/ParseDeclCXX.cpp
+@@ -1726,9 +1726,10 @@ void Parser::ParseClassSpecifier(tok::TokenKind TagTokKind,
+     TagType = DeclSpec::TST_interface;
+   else if (TagTokKind == tok::kw_class)
+     TagType = DeclSpec::TST_class;
+-  else if (TagTokKind == tok::kw__Coroutine) {
++  else if (TagTokKind == tok::kw__Coroutine)
+     TagType = DeclSpec::TST_coroutine;
+-  }
++  else if (TagTokKind == tok::kw__Coroutine)
++      TagType = DeclSpec::TST_task;
+     
+   else {
+     assert(TagTokKind == tok::kw_union && "Not a class specifier");
+@@ -3761,7 +3762,8 @@ void Parser::ParseCXXMemberSpecification(SourceLocation RecordLoc,
+                                          unsigned TagType, Decl *TagDecl) {
+   assert((TagType == DeclSpec::TST_struct ||
+           TagType == DeclSpec::TST_interface ||
+-          TagType == DeclSpec::TST_union || TagType == DeclSpec::TST_class || TagType == DeclSpec::TST_coroutine) &&
++          TagType == DeclSpec::TST_union || TagType == DeclSpec::TST_class ||
++          TagType == DeclSpec::TST_coroutine || TagType == DeclSpec::TST_task) &&
+          "Invalid TagType!");
+ 
+   llvm::TimeTraceScope TimeScope("ParseClass", [&]() {
+@@ -3938,7 +3940,7 @@ void Parser::ParseCXXMemberSpecification(SourceLocation RecordLoc,
+   // are public by default.
+   // HLSL: In HLSL members of a class are public by default.
+   AccessSpecifier CurAS;
+-  if ((TagType == DeclSpec::TST_class || TagType == DeclSpec::TST_coroutine) && !getLangOpts().HLSL)
++  if ((TagType == DeclSpec::TST_class || TagType == DeclSpec::TST_coroutine || DeclSpec::TST_task) && !getLangOpts().HLSL)
+     CurAS = AS_private;
+   else
+     CurAS = AS_public;
+diff --git a/clang/lib/Parse/Parser.cpp b/clang/lib/Parse/Parser.cpp
+index 84de31a063d9..35f55fecc8a3 100644
+--- a/clang/lib/Parse/Parser.cpp
++++ b/clang/lib/Parse/Parser.cpp
+@@ -1162,6 +1162,7 @@ Parser::DeclGroupPtrTy Parser::ParseDeclOrFunctionDefInternal(
+       switch(TKind) {
+       case DeclSpec::TST_class:
+       case DeclSpec::TST_coroutine:
++      case DeclSpec::TST_task:
+         return 5;
+       case DeclSpec::TST_struct:
+         return 6;
+diff --git a/clang/lib/Sema/DeclSpec.cpp b/clang/lib/Sema/DeclSpec.cpp
+index 101468d12b39..b5c4529c9dbf 100644
+--- a/clang/lib/Sema/DeclSpec.cpp
++++ b/clang/lib/Sema/DeclSpec.cpp
+@@ -351,6 +351,7 @@ bool Declarator::isDeclarationOfFunction() const {
+     case TST_char32:
+     case TST_class:
+     case TST_coroutine:
++    case TST_task:
+     case TST_decimal128:
+     case TST_decimal32:
+     case TST_decimal64:
+@@ -587,6 +588,7 @@ const char *DeclSpec::getSpecifierName(DeclSpec::TST T,
+   case DeclSpec::TST_enum:        return "enum";
+   case DeclSpec::TST_class:       return "class";
+   case DeclSpec::TST_coroutine:   return "coroutine";
++  case DeclSpec::TST_task:        return "task";
+   case DeclSpec::TST_union:       return "union";
+   case DeclSpec::TST_struct:      return "struct";
+   case DeclSpec::TST_interface:   return "__interface";
+diff --git a/clang/lib/Sema/SemaCodeComplete.cpp b/clang/lib/Sema/SemaCodeComplete.cpp
+index b6ff96fda598..fbe35ca64804 100644
+--- a/clang/lib/Sema/SemaCodeComplete.cpp
++++ b/clang/lib/Sema/SemaCodeComplete.cpp
+@@ -1819,12 +1819,18 @@ static void AddTypeSpecifierResults(const LangOptions &LangOpts,
+     Results.AddResult(
+         Result("bool", CCP_Type + (LangOpts.ObjC ? CCD_bool_in_ObjC : 0)));
+     Results.AddResult(Result("class", CCP_Type));
+-    Results.AddResult(Result("_Coroutine", CCP_Type));
+     Results.AddResult(Result("wchar_t", CCP_Type));
+ 
++    // uC++-specific
++    Results.AddResult(Result("_Coroutine", CCP_Type));
+     Builder.AddTypedTextChunk("_Coroutine");
+     Builder.AddChunk(CodeCompletionString::CK_HorizontalSpace);
+-    Builder.AddInformativeChunk("A Coroutine, as defined by concurrency course.");
++    Builder.AddInformativeChunk("A Coroutine, as defined by uC++.");
++
++    Results.AddResult(Result("_Task", CCP_Type));
++    Builder.AddTypedTextChunk("_Task");
++    Builder.AddChunk(CodeCompletionString::CK_HorizontalSpace);
++    Builder.AddInformativeChunk("A Coroutine, as defined by uC++.");
+ 
+     // typename name
+     Builder.AddTypedTextChunk("typename");
+@@ -2041,6 +2047,8 @@ static const char *GetCompletionTypeString(QualType T, ASTContext &Context,
+             return "class <anonymous>";
+           case TagTypeKind::Coroutine:
+             return "class <anonymous>";
++          case TagTypeKind::Task:
++            return "Task <anonymous>";
+           case TagTypeKind::Union:
+             return "union <anonymous>";
+           case TagTypeKind::Enum:
+@@ -4189,6 +4197,7 @@ CXCursorKind clang::getCursorKindForDecl(const Decl *D) {
+         return CXCursor_StructDecl;
+       case TagTypeKind::Class:
+       case TagTypeKind::Coroutine:
++      case TagTypeKind::Task:
+         return CXCursor_ClassDecl;
+       case TagTypeKind::Union:
+         return CXCursor_UnionDecl;
+@@ -4542,7 +4551,8 @@ void SemaCodeCompletion::CodeCompleteDeclSpec(Scope *S, DeclSpec &DS,
+     if (getLangOpts().CPlusPlus11 &&
+         (DS.getTypeSpecType() == DeclSpec::TST_class ||
+          DS.getTypeSpecType() == DeclSpec::TST_struct || 
+-         DS.getTypeSpecType() == DeclSpec::TST_coroutine))
++         DS.getTypeSpecType() == DeclSpec::TST_coroutine ||
++         DS.getTypeSpecType() == DeclSpec::TST_task))
+       Results.AddResult("final");
+ 
+     if (AllowNonIdentifiers) {
+@@ -5933,6 +5943,7 @@ void SemaCodeCompletion::CodeCompleteTag(Scope *S, unsigned TagSpec) {
+   case DeclSpec::TST_struct:
+   case DeclSpec::TST_class:
+   case DeclSpec::TST_coroutine:
++  case DeclSpec::TST_task:
+   case DeclSpec::TST_interface:
+     Filter = &ResultBuilder::IsClassOrStruct;
+     ContextKind = CodeCompletionContext::CCC_ClassOrStructTag;
+diff --git a/clang/lib/Sema/SemaDecl.cpp b/clang/lib/Sema/SemaDecl.cpp
+index c759c321daaa..673187b79513 100644
+--- a/clang/lib/Sema/SemaDecl.cpp
++++ b/clang/lib/Sema/SemaDecl.cpp
+@@ -658,6 +658,8 @@ DeclSpec::TST Sema::isTagName(IdentifierInfo &II, Scope *S) {
+         return DeclSpec::TST_class;
+       case TagTypeKind::Coroutine:
+         return DeclSpec::TST_coroutine;
++      case TagTypeKind::Task:
++        return DeclSpec::TST_task;
+       case TagTypeKind::Enum:
+         return DeclSpec::TST_enum;
+       }
+@@ -822,6 +824,7 @@ static bool isTagTypeWithMissingTag(Sema &SemaRef, LookupResult &Result,
+     StringRef FixItTagName;
+     switch (Tag->getTagKind()) {
+     case TagTypeKind::Coroutine:
++    case TagTypeKind::Task:
+     case TagTypeKind::Class:
+       FixItTagName = "class ";
+       break;
+@@ -4993,6 +4996,7 @@ static unsigned GetDiagnosticTypeSpecifierID(const DeclSpec &DS) {
+   switch (T) {
+   case DeclSpec::TST_class:
+   case DeclSpec::TST_coroutine:
++  case DeclSpec::TST_task:
+     return 0;
+   case DeclSpec::TST_struct:
+     return 1;
+@@ -5024,6 +5028,7 @@ Decl *Sema::ParsedFreeStandingDeclSpec(Scope *S, AccessSpecifier AS,
+   TagDecl *Tag = nullptr;
+   if (DS.getTypeSpecType() == DeclSpec::TST_class ||
+       DS.getTypeSpecType() == DeclSpec::TST_coroutine ||
++      DS.getTypeSpecType() == DeclSpec::TST_task ||
+       DS.getTypeSpecType() == DeclSpec::TST_struct ||
+       DS.getTypeSpecType() == DeclSpec::TST_interface ||
+       DS.getTypeSpecType() == DeclSpec::TST_union ||
+@@ -5249,6 +5254,7 @@ Decl *Sema::ParsedFreeStandingDeclSpec(Scope *S, AccessSpecifier AS,
+     DeclSpec::TST TypeSpecType = DS.getTypeSpecType();
+     if (TypeSpecType == DeclSpec::TST_class ||
+         TypeSpecType == DeclSpec::TST_coroutine ||
++        TypeSpecType == DeclSpec::TST_task ||
+         TypeSpecType == DeclSpec::TST_struct ||
+         TypeSpecType == DeclSpec::TST_interface ||
+         TypeSpecType == DeclSpec::TST_union ||
+@@ -16806,6 +16812,7 @@ TypedefDecl *Sema::ParseTypedefDecl(Scope *S, Declarator &D, QualType T,
+   case TST_interface:
+   case TST_union:
+   case TST_coroutine:
++  case TST_task:
+   case TST_class: {
+     TagDecl *tagFromDeclSpec = cast<TagDecl>(D.getDeclSpec().getRepAsDecl());
+     setTagNameForLinkagePurposes(tagFromDeclSpec, NewTD);
+@@ -16912,6 +16919,7 @@ Sema::NonTagKind Sema::getNonTagTypeDeclKind(const Decl *PrevDecl,
+   case TagTypeKind::Interface:
+   case TagTypeKind::Class:
+   case TagTypeKind::Coroutine:
++  case TagTypeKind::Task:
+     return getLangOpts().CPlusPlus ? NTK_NonClass : NTK_NonStruct;
+   case TagTypeKind::Union:
+     return NTK_NonUnion;
+diff --git a/clang/lib/Sema/SemaTemplateVariadic.cpp b/clang/lib/Sema/SemaTemplateVariadic.cpp
+index 6dff76f7dfed..81768957d9a2 100644
+--- a/clang/lib/Sema/SemaTemplateVariadic.cpp
++++ b/clang/lib/Sema/SemaTemplateVariadic.cpp
+@@ -991,6 +991,7 @@ bool Sema::containsUnexpandedParameterPacks(Declarator &D) {
+   case TST_interface:
+   case TST_class:
+   case TST_coroutine:
++  case TST_task:
+   case TST_auto:
+   case TST_auto_type:
+   case TST_decltype_auto:
+diff --git a/clang/lib/Sema/SemaType.cpp b/clang/lib/Sema/SemaType.cpp
+index 1f4cb9e71adf..87bdd94354a0 100644
+--- a/clang/lib/Sema/SemaType.cpp
++++ b/clang/lib/Sema/SemaType.cpp
+@@ -1196,6 +1196,7 @@ static QualType ConvertDeclSpecToType(TypeProcessingState &state) {
+     break;
+   case DeclSpec::TST_class:
+   case DeclSpec::TST_coroutine:
++  case DeclSpec::TST_task:
+   case DeclSpec::TST_enum:
+   case DeclSpec::TST_union:
+   case DeclSpec::TST_struct:
+diff --git a/clang/utils/ClangVisualizers/clang.natvis b/clang/utils/ClangVisualizers/clang.natvis
+index a3fab18d5c9f..85b365d7afc5 100644
+--- a/clang/utils/ClangVisualizers/clang.natvis
++++ b/clang/utils/ClangVisualizers/clang.natvis
+@@ -854,7 +854,7 @@ For later versions of Visual Studio, no setup is required-->
+     <DisplayString IncludeView="extra" Condition="TypeSpecType == TST_typeofExpr || TypeSpecType == TST_decltype">
+       , [{ExprRep}]
+     </DisplayString>
+-    <DisplayString IncludeView="extra" Condition="TypeSpecType == TST_enum || TypeSpecType == TST_struct || TypeSpecType == TST_interface || TypeSpecType == TST_union || TypeSpecType == TST_class || TypeSpecType == TST_coroutine">
++    <DisplayString IncludeView="extra" Condition="TypeSpecType == TST_enum || TypeSpecType == TST_struct || TypeSpecType == TST_interface || TypeSpecType == TST_union || TypeSpecType == TST_class || TypeSpecType == TST_coroutine || TypeSpecType == TST_task">
+       , [{DeclRep}]
+     </DisplayString>
+     <DisplayString IncludeView="extra"></DisplayString>
+@@ -868,7 +868,7 @@ For later versions of Visual Studio, no setup is required-->
+       <Item Name="ExprRep" Condition="TypeSpecType == TST_typeofExpr || TypeSpecType == TST_decltype">
+         ExprRep
+       </Item>
+-      <Item Name="DeclRep" Condition="TypeSpecType == TST_enum || TypeSpecType == TST_struct || TypeSpecType == TST_interface || TypeSpecType == TST_union || TypeSpecType == TST_class || TypeSpecType == TST_coroutine">
++      <Item Name="DeclRep" Condition="TypeSpecType == TST_enum || TypeSpecType == TST_struct || TypeSpecType == TST_interface || TypeSpecType == TST_union || TypeSpecType == TST_class || TypeSpecType == TST_coroutine || TypeSpecType == TST_task">
+         DeclRep
+       </Item>
+ 
