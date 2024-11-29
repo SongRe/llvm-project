@@ -320,6 +320,10 @@ Retry:
     bool HasLeadingEmptyMacro = Tok.hasLeadingEmptyMacro();
     return Actions.ActOnNullStmt(ConsumeToken(), HasLeadingEmptyMacro);
   }
+  case tok::kw__Accept:
+    // llvm::errs() << "Test For Real\n";
+
+    return ParseAcceptStatement(TrailingElseLoc); // TODO: parse this properly
 
   case tok::kw_if:                  // C99 6.8.4.1: if-statement
     return ParseIfStatement(TrailingElseLoc);
@@ -1514,6 +1518,224 @@ struct MisleadingIndentationChecker {
   }
 };
 
+}
+
+StmtResult Parser::ParseAcceptStatement(SourceLocation *TrailingElseLoc) {
+  assert(Tok.is(tok::kw__Accept) && "Not an _Accept stmt!");
+  SourceLocation AcceptLoc = ConsumeToken();  // eat the '_Accept'.
+
+  bool IsConstexpr = false;
+  bool IsConsteval = false;
+  SourceLocation NotLocation;
+  SourceLocation ConstevalLoc;
+
+  if (Tok.is(tok::kw_constexpr)) {
+    // C23 supports constexpr keyword, but only for object definitions.
+    if (getLangOpts().CPlusPlus) {
+      Diag(Tok, getLangOpts().CPlusPlus17 ? diag::warn_cxx14_compat_constexpr_if
+                                          : diag::ext_constexpr_if);
+      IsConstexpr = true;
+      ConsumeToken();
+    }
+  } else {
+    if (Tok.is(tok::exclaim)) {
+      NotLocation = ConsumeToken();
+    }
+
+    if (Tok.is(tok::kw_consteval)) {
+      Diag(Tok, getLangOpts().CPlusPlus23 ? diag::warn_cxx20_compat_consteval_if
+                                          : diag::ext_consteval_if);
+      IsConsteval = true;
+      ConstevalLoc = ConsumeToken();
+    }
+  }
+  if (!IsConsteval && (NotLocation.isValid() || Tok.isNot(tok::l_paren))) {
+    Diag(Tok, diag::err_expected_lparen_after) << "_Accept";
+    SkipUntil(tok::semi);
+    return StmtError();
+  }
+
+  bool C99orCXX = getLangOpts().C99 || getLangOpts().CPlusPlus;
+
+  // C99 6.8.4p3 - In C99, the if statement is a block.  This is not
+  // the case for C90.
+  //
+  // C++ 6.4p3:
+  // A name introduced by a declaration in a condition is in scope from its
+  // point of declaration until the end of the substatements controlled by the
+  // condition.
+  // C++ 3.3.2p4:
+  // Names declared in the for-init-statement, and in the condition of if,
+  // while, for, and switch statements are local to the if, while, for, or
+  // switch statement (including the controlled statement).
+  //
+  ParseScope IfScope(this, Scope::DeclScope | Scope::ControlScope, C99orCXX);
+
+  // Parse the condition.
+  StmtResult InitStmt;
+  Sema::ConditionResult Cond;
+  SourceLocation LParen;
+  SourceLocation RParen;
+  std::optional<bool> ConstexprCondition;
+  if (!IsConsteval) {
+
+    if (ParseParenExprOrCondition(&InitStmt, Cond, AcceptLoc,
+                                  IsConstexpr ? Sema::ConditionKind::ConstexprIf
+                                              : Sema::ConditionKind::Boolean,
+                                  LParen, RParen))
+      return StmtError();
+
+    if (IsConstexpr)
+      ConstexprCondition = Cond.getKnownValue();
+  }
+
+  bool IsBracedThen = Tok.is(tok::l_brace);
+
+  // C99 6.8.4p3 - In C99, the body of the if statement is a scope, even if
+  // there is no compound stmt.  C90 does not have this clause.  We only do this
+  // if the body isn't a compound statement to avoid push/pop in common cases.
+  //
+  // C++ 6.4p1:
+  // The substatement in a selection-statement (each substatement, in the else
+  // form of the if statement) implicitly defines a local scope.
+  //
+  // For C++ we create a scope for the condition and a new scope for
+  // substatements because:
+  // -When the 'then' scope exits, we want the condition declaration to still be
+  //    active for the 'else' scope too.
+  // -Sema will detect name clashes by considering declarations of a
+  //    'ControlScope' as part of its direct subscope.
+  // -If we wanted the condition and substatement to be in the same scope, we
+  //    would have to notify ParseStatement not to create a new scope. It's
+  //    simpler to let it create a new scope.
+  //
+  ParseScope InnerScope(this, Scope::DeclScope, C99orCXX, IsBracedThen);
+
+  MisleadingIndentationChecker MIChecker(*this, MSK_if, AcceptLoc);
+
+  // Read the 'then' stmt.
+  SourceLocation ThenStmtLoc = Tok.getLocation();
+
+  SourceLocation InnerStatementTrailingElseLoc;
+  StmtResult ThenStmt;
+  {
+    bool ShouldEnter = ConstexprCondition && !*ConstexprCondition;
+    Sema::ExpressionEvaluationContext Context =
+        Sema::ExpressionEvaluationContext::DiscardedStatement;
+    if (NotLocation.isInvalid() && IsConsteval) {
+      Context = Sema::ExpressionEvaluationContext::ImmediateFunctionContext;
+      ShouldEnter = true;
+    }
+
+    EnterExpressionEvaluationContext PotentiallyDiscarded(
+        Actions, Context, nullptr,
+        Sema::ExpressionEvaluationContextRecord::EK_Other, ShouldEnter);
+    ThenStmt = ParseStatement(&InnerStatementTrailingElseLoc);
+  }
+
+  if (Tok.isNot(tok::kw_else))
+    MIChecker.Check();
+
+  // Pop the 'if' scope if needed.
+  InnerScope.Exit();
+
+  // If it has an else, parse it.
+  SourceLocation ElseLoc;
+  SourceLocation ElseStmtLoc;
+  StmtResult ElseStmt;
+
+  if (Tok.is(tok::kw_else)) {
+    if (TrailingElseLoc)
+      *TrailingElseLoc = Tok.getLocation();
+
+    ElseLoc = ConsumeToken();
+    ElseStmtLoc = Tok.getLocation();
+
+    // C99 6.8.4p3 - In C99, the body of the if statement is a scope, even if
+    // there is no compound stmt.  C90 does not have this clause.  We only do
+    // this if the body isn't a compound statement to avoid push/pop in common
+    // cases.
+    //
+    // C++ 6.4p1:
+    // The substatement in a selection-statement (each substatement, in the else
+    // form of the if statement) implicitly defines a local scope.
+    //
+    ParseScope InnerScope(this, Scope::DeclScope, C99orCXX,
+                          Tok.is(tok::l_brace));
+
+    MisleadingIndentationChecker MIChecker(*this, MSK_else, ElseLoc);
+    bool ShouldEnter = ConstexprCondition && *ConstexprCondition;
+    Sema::ExpressionEvaluationContext Context =
+        Sema::ExpressionEvaluationContext::DiscardedStatement;
+    if (NotLocation.isValid() && IsConsteval) {
+      Context = Sema::ExpressionEvaluationContext::ImmediateFunctionContext;
+      ShouldEnter = true;
+    }
+
+    EnterExpressionEvaluationContext PotentiallyDiscarded(
+        Actions, Context, nullptr,
+        Sema::ExpressionEvaluationContextRecord::EK_Other, ShouldEnter);
+    ElseStmt = ParseStatement();
+
+    if (ElseStmt.isUsable())
+      MIChecker.Check();
+
+    // Pop the 'else' scope if needed.
+    InnerScope.Exit();
+  } else if (Tok.is(tok::code_completion)) {
+    cutOffParsing();
+    Actions.CodeCompletion().CodeCompleteAfterIf(getCurScope(), IsBracedThen);
+    return StmtError();
+  } else if (InnerStatementTrailingElseLoc.isValid()) {
+    Diag(InnerStatementTrailingElseLoc, diag::warn_dangling_else);
+  }
+
+  IfScope.Exit();
+
+  // If the then or else stmt is invalid and the other is valid (and present),
+  // turn the invalid one into a null stmt to avoid dropping the other
+  // part.  If both are invalid, return error.
+  if ((ThenStmt.isInvalid() && ElseStmt.isInvalid()) ||
+      (ThenStmt.isInvalid() && ElseStmt.get() == nullptr) ||
+      (ThenStmt.get() == nullptr && ElseStmt.isInvalid())) {
+    // Both invalid, or one is invalid and other is non-present: return error.
+    return StmtError();
+  }
+
+  if (IsConsteval) {
+    auto IsCompoundStatement = [](const Stmt *S) {
+      if (const auto *Outer = dyn_cast_if_present<AttributedStmt>(S))
+        S = Outer->getSubStmt();
+      return isa_and_nonnull<clang::CompoundStmt>(S);
+    };
+
+    if (!IsCompoundStatement(ThenStmt.get())) {
+      Diag(ConstevalLoc, diag::err_expected_after) << "consteval"
+                                                   << "{";
+      return StmtError();
+    }
+    if (!ElseStmt.isUnset() && !IsCompoundStatement(ElseStmt.get())) {
+      Diag(ElseLoc, diag::err_expected_after) << "else"
+                                              << "{";
+      return StmtError();
+    }
+  }
+
+  // Now if either are invalid, replace with a ';'.
+  if (ThenStmt.isInvalid())
+    ThenStmt = Actions.ActOnNullStmt(ThenStmtLoc);
+  if (ElseStmt.isInvalid())
+    ElseStmt = Actions.ActOnNullStmt(ElseStmtLoc);
+
+  IfStatementKind Kind = IfStatementKind::Ordinary;
+  if (IsConstexpr)
+    Kind = IfStatementKind::Constexpr;
+  else if (IsConsteval)
+    Kind = NotLocation.isValid() ? IfStatementKind::ConstevalNegated
+                                 : IfStatementKind::ConstevalNonNegated;
+
+  return Actions.ActOnAcceptStmt(AcceptLoc, Kind, LParen, InitStmt.get(), Cond, RParen,
+                             ThenStmt.get(), ElseLoc, ElseStmt.get());
 }
 
 /// ParseIfStatement

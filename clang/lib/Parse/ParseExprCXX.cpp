@@ -2745,7 +2745,12 @@ bool Parser::ParseUnqualifiedIdOperator(CXXScopeSpec &SS, bool EnteringContext,
   SourceLocation SymbolLocations[3];
   OverloadedOperatorKind Op = OO_None;
   switch (Tok.getKind()) {
+    case tok::kw__Accept:
+      llvm::errs() << "Test123\n";
+      break;
     case tok::kw_new:
+      llvm::errs() << "Test6\n";
+      [[fallthrough]];
     case tok::kw_delete: {
       bool isNew = Tok.getKind() == tok::kw_new;
       // Consume the 'new' or 'delete'.
